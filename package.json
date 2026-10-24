@@ -1,0 +1,24 @@
+{
+  "name": "itsmelucifer",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "allowScripts": {
+    "@whiskeysockets/baileys": true,
+    "protobufjs": true,
+    "yt-dlp-exec": true
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.8",
+    "protobufjs": "^7.2.5",
+    "node-telegram-bot-api": "^0.61.0",
+    "axios": "^1.6.2",
+    "yt-dlp-exec": "^1.0.3",
+    "qrcode-terminal": "^0.12.0",
+    "pino": "^8.16.0",
+    "dotenv": "^16.4.7",
+    "node-fetch": "^2.7.0"
+  }
+}
