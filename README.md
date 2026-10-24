@@ -75,3 +75,20 @@ npm install
 
 # 4. Start the bot
 npm start
+
+
+## Pairing bot setup (patched)
+
+1. Copy `config.env.example` to `config.env`.
+2. Create a **new** Telegram bot token with BotFather and set `TELEGRAM_API=...` in `config.env`.
+3. Install dependencies with `npm install`.
+4. Start with `npm start`, then open your Telegram bot privately and send `/pair`.
+5. Send your WhatsApp number in international format using digits only (for example, `947XXXXXXXX`).
+
+Keep `config.env` and the `auth/` folder private. Never upload your Telegram token or WhatsApp session files to GitHub. If an old token was exposed, revoke it with BotFather and use a new one.
+
+The pairing handler has been connected to the active Baileys socket. JavaScript syntax checks pass, but a real WhatsApp pairing attempt still needs to be tested on your hosting environment.
+
+### Important: existing command modules
+
+`menu.js`, `group.js`, and `downloader.js` import `../command`, but this repository's `index.js` uses a separate inline command handler and does not load that framework. Those modules will not become active just by being present in this ZIP; they need to be ported into `index.js` or the missing command framework must be supplied.
