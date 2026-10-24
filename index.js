@@ -1,151 +1,212 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } = require('@whiskeysockets/baileys');
 const P = require('pino');
 const config = require('./config');
 const startTelegramBot = require('./telegramBot');
 const axios = require('axios');
 
-let linkWarnings = {}; // groupId -> userId -> count
+let linkWarnings = {}; // groupId -> userId -> warning count
 
 async function startBot() {
+    // 1. Telegram Pair Code Bot එක Run කිරීම
     startTelegramBot();
+
     const { state, saveCreds } = await useMultiFileAuthState('auth');
-    
+    const { version } = await fetchLatestBaileysVersion();
+
     const sock = makeWASocket({
         auth: state,
         logger: P({ level: 'silent' }),
-        browser: ["ItsmeLucifer", "Chrome", "1.0"]
+        printQRInTerminal: false,
+        browser: ["ItsmeLucifer", "Chrome", "1.0.0"],
+        version
     });
 
-    // Pair Code Login
-    if (!sock.authState.creds.registered) {
-        console.log("Waiting for Pair Code from Telegram...");
-        // Telegram එකෙන් එන code එක check කරන loop එක
-        setInterval(async () => {
-            if (global.pairCodes) {
-                for (let code in global.pairCodes) {
-                    let number = global.pairCodes[code];
-                    try {
-                        let result = await sock.requestPairingCode(number, code);
-                        // Baileys වල pair code ගන්නේ number එකෙන් විතරයි, code එක display වෙනවා phone එකේ
-                        console.log(`Pair code for ${number}: ${code}`);
-                    } catch(e){}
+    // Telegram එකෙන් එන Number එකට Pair Code එක Generate කිරීම
+    setInterval(async () => {
+        if (global.pairCodes && !sock.authState.creds.registered) {
+            for (let codeKey in global.pairCodes) {
+                let number = global.pairCodes[codeKey];
+                try {
+                    // Pair code එක Baileys එකෙන් ඉල්ලීම
+                    let generatedCode = await sock.requestPairingCode(number);
+                    console.log(`🔑 Generated Pair Code for ${number}: ${generatedCode}`);
+                    // Generated Code එක global object එකට update කිරීම
+                    global.pairCodes[codeKey] = generatedCode;
+                } catch (e) {
+                    console.error("Pairing Error:", e.message);
                 }
             }
-        }, 10000);
-        
-        // Manual: .pair command එකෙන් pair code ඉල්ලුවොත්
-        const pairingCode = await sock.requestPairingCode(config.OWNER_NUMBER_DISPLAY.replace(/[^0-9]/g,''));
-        console.log("Your WhatsApp Pair Code (Owner):", pairingCode);
-    }
+        }
+    }, 5000);
 
     sock.ev.on('creds.update', saveCreds);
-    
+
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect } = update;
+        if (connection === 'close') {
+            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('Connection closed. Reconnecting...', shouldReconnect);
+            if (shouldReconnect) {
+                startBot();
+            }
+        } else if (connection === 'open') {
+            console.log(`✅ ${config.BOT_NAME || "Ｉｔｓme𝑳𝒖𝒄𝒊ｆeｒ ࿐ "} is Connected to WhatsApp!`);
+        }
+    });
+
     sock.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
         if (!msg.message || msg.key.fromMe) return;
+
         const from = msg.key.remoteJid;
         const isGroup = from.endsWith('@g.us');
         const sender = msg.key.participant || from;
         const body = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || "";
-        const isOwner = sender === config.OWNER_NUMBER;
+        
+        const prefix = config.PREFIX || ".";
 
-        // Auto Join WhatsApp Channels when bot is added
-        if (msg.message.groupInviteMessage) {
-            // Auto join logic - Baileys වලින් channel join කරන්න බෑ, ඒ නිසා message එකක් දානවා
-        }
-
-        // --- ANTI LINK SYSTEM ---
+        // --- 🛡️ ANTI LINK SYSTEM ---
         if (isGroup && body.match(/(https:\/\/|http:\/\/|chat.whatsapp.com|t.me|wa.me)/gi)) {
-            const groupMetadata = await sock.groupMetadata(from);
-            const isAdmin = groupMetadata.participants.find(p => p.id === sender)?.admin;
-            if (!isAdmin) {
-                const key = `${from}_${sender}`;
-                linkWarnings[key] = (linkWarnings[key] || 0) + 1;
-                await sock.sendMessage(from, { delete: msg.key });
-                
-                if (linkWarnings[key] === 1) {
-                    await sock.sendMessage(from, { text: `⚠️ @${sender.split('@')[0]} Link දාන්න එපා! පළවෙනි Warning එක!`, mentions: [sender] });
-                } else if (linkWarnings[key] >= 2) {
-                    await sock.sendMessage(from, { text: `🚫 @${sender.split('@')[0]} දෙවෙනි පාරත් Link දැම්මා නිසා Remove කරනවා!`, mentions: [sender] });
-                    await sock.groupParticipantsUpdate(from, [sender], "remove");
-                    delete linkWarnings[key];
+            try {
+                const groupMetadata = await sock.groupMetadata(from);
+                const isAdmin = groupMetadata.participants.find(p => p.id === sender)?.admin;
+
+                if (!isAdmin) {
+                    const key = `${from}_${sender}`;
+                    linkWarnings[key] = (linkWarnings[key] || 0) + 1;
+
+                    // 1. Delete Link Message
+                    await sock.sendMessage(from, { delete: msg.key });
+
+                    if (linkWarnings[key] === 1) {
+                        // First Warning
+                        await sock.sendMessage(from, { 
+                            text: `⚠️ *@${sender.split('@')[0]}*, Link දාන්න එපා! පළවෙනි Warning එක. දෙවෙනි පාර දැම්මොත් Group එකෙන් Remove වෙනවා!`, 
+                            mentions: [sender] 
+                        });
+                    } else if (linkWarnings[key] >= 2) {
+                        // Second Time -> Remove User
+                        await sock.sendMessage(from, { 
+                            text: `🚫 *@${sender.split('@')[0]}*, දෙවෙනි පාරත් Link දැමූ නිසා Group එකෙන් Remove කරනවා!`, 
+                            mentions: [sender] 
+                        });
+                        await sock.groupParticipantsUpdate(from, [sender], "remove");
+                        delete linkWarnings[key];
+                    }
+                    return;
                 }
-                return;
+            } catch (err) {
+                console.error("Anti-link error:", err);
             }
         }
 
-        if (!body.startsWith(config.PREFIX)) return;
-        const args = body.slice(1).trim().split(/ +/);
+        if (!body.startsWith(prefix)) return;
+        const args = body.slice(prefix.length).trim().split(/ +/);
         const command = args.shift().toLowerCase();
 
-        // --- MENU ---
+        // --- 📜 MAIN MENU ---
         if (command === 'menu' || command === 'help') {
-            const menu = `
-╭───「 *${config.BOT_NAME}* 」───
-│ 👑 Owner: ${config.OWNER_NAME}
-│ 🛡️ Creator: ${config.CREATOR}
+            const menuText = `
+╭───「 *${config.BOT_NAME || "Ｉｔｓme𝑳𝒖𝒄𝒊ｆeｒ ࿐ "}* 」───
+│ 👑 *Owner:* ${config.OWNER_NAME || "CYBER KING SHADOW 👑"}
+│ 🛠️ *Creator:* ${config.CREATOR || "cyber king shadow"}
+│ 🏰 *Kingdom:* Shadow Kingdom
 │
-│ *GROUP CONTROL*
-│ .antilink on/off
-│ .add 94xx - Add User
-│ .kick @user - Remove
-│ .tagall - Tag All Members
-│ .hidetag Hello - Hide Tag
+│ 👥 *GROUP CONTROL*
+│  • .add 94xxxxxxxxx
+│  • .kick @user
+│  • .tagall
+│  • .hidetag <text>
 │
-│ *DOWNLOADER*
-│ .fb <link> - FB Video
-│ .tiktok <link> - TikTok No Watermark
-│ .ig <link> - Insta Video
-│ .yt <link> - YouTube Video
-│ .gimage cat - Google Image
+│ 📥 *DOWNLOAD MENU*
+│  • .yt <link/song name>
+│  • .fb <link>
+│  • .tiktok <link>
+│  • .ig <link>
+│  • .gimage <search text>
 │
-│ *AI TOOLS*
-│ .ai <text> - Chat with AI
-│ .imagine cat - AI Image Gen
-│
-│ *OWNER*
-│ .join <group link>
-╰────────────────
-            
-*Owner Contact Button* 👇`;
+│ 🤖 *AI & TOOLS*
+│  • .ai <question>
+│  • .imagine <prompt>
+╰───────────────────────────
+
+📢 *Join Our Official Channels:*
+• Channel 1: ${config.WHATSAPP_CHANNEL1 || "https://whatsapp.com/channel/0029Vb8lct0HltY6qWZkFR1V"}
+• Channel 2: ${config.WHATSAPP_CHANNEL2 || "https://whatsapp.com/channel/0029Vb6uY0uCsU9R86NUsK2a"}
+• Telegram: ${config.TELEGRAM_CHANNEL || "https://t.me/itsmeshadow0"}
+`;
+
+            // Owner Contact vCard setup
+            const vcard = 'BEGIN:VCARD\n' +
+                'VERSION:3.0\n' +
+                'FN:' + (config.OWNER_NAME || "CYBER KING SHADOW 👑") + '\n' +
+                'TEL;type=CELL;type=VOICE;waid=' + (config.OWNER_NUMBER || "94763834416") + ':+' + (config.OWNER_NUMBER || "94763834416") + '\n' +
+                'END:VCARD';
+
+            // Send Menu Text with Image
             await sock.sendMessage(from, {
-                text: menu,
-                footer: "Shadow Kingdom",
-                buttons: [
-                    { buttonId: `owner`, buttonText: { displayText: `👑 ${config.OWNER_NUMBER_DISPLAY}` }, type: 1 },
-                    { buttonId: `channel`, buttonText: { displayText: `📢 WhatsApp Channel` }, type: 1 }
-                ],
-                headerType: 1
-            });
-            // Auto Channel Invite
-            await sock.sendMessage(from, { text: `Bot එක හොඳ නම් Channel එකට Join වෙන්න:\n${config.WHATSAPP_CHANNEL1}\n${config.WHATSAPP_CHANNEL2}` });
+                image: { url: "https://res.cloudinary.com/df2rnoijw/image/upload/v1752404824/shkqo3nbxkhhbyej2lxm.jpg" },
+                caption: menuText
+            }, { quoted: msg });
+
+            // Send Owner Contact Button/Card
+            await sock.sendMessage(from, {
+                contacts: {
+                    displayName: config.OWNER_NAME || "CYBER KING SHADOW 👑",
+                    contacts: [{ vcard }]
+                }
+            }, { quoted: msg });
         }
 
-        // --- TAG ALL ---
+        // --- 📢 TAG ALL ---
         if (command === 'tagall') {
+            if (!isGroup) return sock.sendMessage(from, { text: "❌ මෙය Group වල පමණක් භාවිතා කළ හැක!" });
             const groupMetadata = await sock.groupMetadata(from);
             let members = groupMetadata.participants.map(p => p.id);
-            let text = `📢 *Tag All by ${config.BOT_NAME}*\n\n` + (args.join(" ") || "Attention Everyone!") + "\n\n";
-            await sock.sendMessage(from, { text: text, mentions: members });
+            let text = `📢 *Tag All by ${config.BOT_NAME}*\n\n` + (args.join(" ") || "සියලුම දෙනාගේ අවධානයට!") + "\n\n";
+            await sock.sendMessage(from, { text: text, mentions: members }, { quoted: msg });
         }
 
-        // --- AI CHAT (Simple) ---
+        // --- 🤖 AI CHAT ---
         if (command === 'ai') {
             let prompt = args.join(" ");
-            if(!prompt) return sock.sendMessage(from, {text: "Text එකක් දාන්න .ai hello වගේ"});
-            // මෙතන OpenAI API එක දාගන්න
-            await sock.sendMessage(from, { text: `🤖 *Lucifer AI*: \n\nඔයා ඇහුවේ "${prompt}" නේද? මම දැන් AI mode එකේ වැඩ කරනවා. OpenAI Key එක config එකේ දාන්න.` });
+            if (!prompt) return sock.sendMessage(from, { text: "❌ කරුණාකර ප්‍රශ්නයක් ඇතුළත් කරන්න! (උදා: .ai Hello)" });
+
+            try {
+                let res = await axios.get(`https://apis.davidcyriltech.my.id/ai/gemini?text=${encodeURIComponent(prompt)}`);
+                if (res.data && res.data.success) {
+                    await sock.sendMessage(from, { text: `🤖 *Ｉｔｓme𝑳𝒖𝒄𝒊ｆeｒ AI:*\n\n${res.data.result}` }, { quoted: msg });
+                } else {
+                    sock.sendMessage(from, { text: "❌ AI Response එක ලබා ගැනීමට නොහැකි විය." });
+                }
+            } catch (e) {
+                sock.sendMessage(from, { text: "❌ AI API Error!" });
+            }
         }
 
-        // --- DOWNLOADER EXAMPLE (yt-dlp) ---
-        if (['yt','fb','tiktok','ig'].includes(command)) {
+        // --- 📥 MEDIA DOWNLOADER ---
+        if (['yt', 'fb', 'tiktok', 'ig'].includes(command)) {
             let url = args[0];
-            if(!url) return sock.sendMessage(from, {text: "Link එක දාන්න!"});
-            await sock.sendMessage(from, {text: "⏳ Downloading... *"+config.BOT_NAME+"*"});
-            // ytdlp logic එක මෙතනට එනවා - server එකේ yt-dlp install කරලා තියෙන්න ඕන
-            // const file = await ytdlp(url)
-            // await sock.sendMessage(from, { video: { url: file }, caption: `Downloaded by ${config.BOT_NAME}` })
-            await sock.sendMessage(from, {text: `✅ Downloader Ready! Link: ${url}\n\n(yt-dlp server එකේ install කරලා full code එක enable කරන්න. Code එක telegramBot.js එකේ වගේම ready කරලා තියෙන්නේ)`});
+            if (!url) return sock.sendMessage(from, { text: "❌ කරුණාකර Video/Media Link එකක් ඇතුළත් කරන්න!" });
+            
+            await sock.sendMessage(from, { text: `⏳ *Downloading Video...* \n_${config.BOT_NAME}_` }, { quoted: msg });
+
+            try {
+                let apiEndpoint = `https://apis.davidcyriltech.my.id/${command === 'yt' ? 'download/ytmp4' : command}?url=${encodeURIComponent(url)}`;
+                let res = await axios.get(apiEndpoint);
+
+                if (res.data && res.data.success) {
+                    let mediaUrl = res.data.result.download_url || res.data.result.video || res.data.result.url;
+                    await sock.sendMessage(from, { 
+                        video: { url: mediaUrl }, 
+                        caption: `📥 *Downloaded by ${config.BOT_NAME}*\n👑 Owner: ${config.OWNER_NAME}` 
+                    }, { quoted: msg });
+                } else {
+                    sock.sendMessage(from, { text: "❌ Download කිරීමට නොහැකි විය. Link එක පරීක්ෂා කරන්න." });
+                }
+            } catch (e) {
+                sock.sendMessage(from, { text: "❌ Downloader API Error!" });
+            }
         }
     });
 }
