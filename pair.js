@@ -1,19 +1,28 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, delay } = require('@whiskeysockets/baileys');
-const pino = require('pino');
-const readline = require('readline');
-const config = require('./config');
+const { delay } = require('@whiskeysockets/baileys');
 
-// බොට් ලින්ක් වූ විට ඔටෝ චැනල් එකට සම්බන්ධ වීම සහ Auto Join ක්‍රියාත්මක කිරීම
-async function autoJoinChannels(conn) {
-    try {
-        if (config.WHATSAPP_CHANNEL_1) {
-            await conn.groupAcceptInvite("0029Vb8lct0HltY6qWZkFR1V").catch(() => {});
-        }
-    } catch (e) {
-        console.log("Auto join error:", e);
+/**
+ * Requests a WhatsApp pairing code from the active, unregistered Baileys socket.
+ * The caller should pass the number in international format, digits only.
+ */
+async function requestPairingCode(sock, rawNumber) {
+    if (!sock || typeof sock.requestPairingCode !== 'function') {
+        throw new Error('WhatsApp socket is not ready. Wait a few seconds and try again.');
     }
+
+    const number = String(rawNumber || '').replace(/\D/g, '');
+    if (!/^\d{8,15}$/.test(number)) {
+        throw new Error('Invalid phone number. Include country code and digits only.');
+    }
+
+    // Let the websocket initialize before asking Baileys for a pairing code.
+    await delay(1000);
+    const code = await sock.requestPairingCode(number);
+    if (!code || typeof code !== 'string') {
+        throw new Error('WhatsApp did not return a pairing code. Check the terminal logs and try again.');
+    }
+
+    // Display in short groups to make typing easier.
+    return code.match(/.{1,4}/g).join('-');
 }
 
-// Telegram Bot API හරහා Pair Code ලබා දීම සහ සම්බන්ධ කිරීම මෙහිදී සිදු වේ.
-console.log("Bot Name configured as: " + config.BOT_NAME);
-console.log("Telegram API Connected successfully for Pairing System!");
+module.exports = { requestPairingCode };
