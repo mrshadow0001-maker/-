@@ -2,7 +2,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const config = require('./config');
 
 // Telegram API Token
-const token = config.TELEGRAM_API || "8943968618:AAED5fsJDro62vPELI1cprFCLYZuJeT3_9M";
+const token = config.TELEGRAM_API || "8943968618:AAE7wVn5K7twp44BbojDSNtzpQWY5VxV6oM";
 const bot = new TelegramBot(token, { polling: true });
 
 console.log("🤖 Telegram Pairing Bot is running...");
