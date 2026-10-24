@@ -6,10 +6,10 @@ const axios = require('axios');
 
 let linkWarnings = {}; // groupId -> userId -> warning count
 
-async function startBot() {
-    // 1. Telegram Pair Code Bot එක Run කිරීම
-    startTelegramBot();
+// Start Telegram polling once only; reconnects must not create duplicate pollers.
+startTelegramBot();
 
+async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('auth');
     const { version } = await fetchLatestBaileysVersion();
 
@@ -21,23 +21,8 @@ async function startBot() {
         version
     });
 
-    // Telegram එකෙන් එන Number එකට Pair Code එක Generate කිරීම
-    setInterval(async () => {
-        if (global.pairCodes && !sock.authState.creds.registered) {
-            for (let codeKey in global.pairCodes) {
-                let number = global.pairCodes[codeKey];
-                try {
-                    // Pair code එක Baileys එකෙන් ඉල්ලීම
-                    let generatedCode = await sock.requestPairingCode(number);
-                    console.log(`🔑 Generated Pair Code for ${number}: ${generatedCode}`);
-                    // Generated Code එක global object එකට update කිරීම
-                    global.pairCodes[codeKey] = generatedCode;
-                } catch (e) {
-                    console.error("Pairing Error:", e.message);
-                }
-            }
-        }
-    }, 5000);
+    // Give Telegram pairing handler the active socket and current registration state.
+    startTelegramBot.setWhatsAppSocket(sock, () => Boolean(state.creds.registered));
 
     sock.ev.on('creds.update', saveCreds);
 
