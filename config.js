@@ -1,6 +1,6 @@
 module.exports = {
     BOT_NAME: "Ｉｔｓｍｅ𝑳𝒖𝒄𝒊𝒇𝒆𝒓 ࿐ ",
-    CREATOR: "ක්‍රියෙට ශැඩෝ - Shadow Kingdom",
+    CREATOR: " CREAT BY - Shadow Kingdom",
     OWNER_NAME: "CYBER KING SHADOW 👑",
     OWNER_NUMBER: "94763834416@s.whatsapp.net", // 763834416
     OWNER_NUMBER_DISPLAY: "763834416",
